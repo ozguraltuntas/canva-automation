@@ -164,12 +164,24 @@ else:
 # =========================================================================
 # 3. METİNLER
 # =========================================================================
+import re
+
 st.header("3. Metinler (alt banner)")
-col1, col2 = st.columns(2)
-with col1:
-    title = st.text_input("Title", value="BMW I5 SERIES G60", placeholder="örn: BMW I5 SERIES G60")
-with col2:
-    years = st.text_input("Years", value="2024-2028", placeholder="örn: 2024-2028")
+combined = st.text_input(
+    "Araç bilgisi (model + yıl aralığı)",
+    value="BMW I5 SERIES G60 2024-2028",
+    placeholder="örn: Acura ADX 2025-2029",
+)
+
+_years_match = re.search(r'\b(\d{4}\s*[-–]\s*\d{2,4})\b', combined)
+if _years_match:
+    years = _years_match.group(1).replace(' ', '')
+    title = combined[:_years_match.start()].strip().rstrip(',').rstrip()
+else:
+    years = ""
+    title = combined.strip()
+
+st.caption(f"📌 Title: **{title or '(boş)'}**  |  Years: **{years or '(yıl bulunamadı)'}**")
 
 # =========================================================================
 # 4. GOOGLE DRIVE FOLDER
