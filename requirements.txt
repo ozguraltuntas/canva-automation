@@ -1,0 +1,14 @@
+rembg>=2.0.50
+simple-lama-inpainting>=0.1.2
+Pillow>=10.0.0
+numpy>=1.24
+requests>=2.31
+python-dotenv>=1.0
+streamlit>=1.30
+streamlit-drawable-canvas>=0.9.3
+transformers>=4.40
+einops>=0.7
+timm>=0.9
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2

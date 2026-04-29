@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pt
+outputs/
+inputs/.tmp_*
+.claude/
+.drive_token.pickle
+google_oauth_client.json
