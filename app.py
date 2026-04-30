@@ -47,19 +47,23 @@ ss.setdefault("canvas_key_seed", 0)
 # 1. RESİM SEÇ
 # =========================================================================
 st.header("1. Araç fotoğrafı")
-uploaded = st.file_uploader("Resim seç (jpg/png)", type=["jpg", "jpeg", "png"])
-if uploaded is not None:
+
+def _set_uploaded(path: Path, name: str):
+    ss.uploaded_path = path
+    ss.uploaded_name = name
+    candidate = MASKS / f"{path.stem}.mask.png"
+    ss.mask_path = candidate if candidate.exists() else None
+    ss.ai_drawing = None
+    ss.canvas_key_seed += 1
+
+uploaded = st.file_uploader("Resim seç (jpg/png)", type=["jpg", "jpeg", "png"],
+                             key="file_uploader")
+if uploaded is not None and ss.uploaded_name != uploaded.name:
     target = INPUTS / uploaded.name
     with open(target, "wb") as f:
         f.write(uploaded.getbuffer())
-    ss.uploaded_path = target
-    ss.uploaded_name = uploaded.name
-    # Mask path konvansiyonu (varsa kullan)
-    candidate = MASKS / f"{target.stem}.mask.png"
-    if candidate.exists():
-        ss.mask_path = candidate
-    else:
-        ss.mask_path = None
+    _set_uploaded(target, uploaded.name)
+    st.rerun()
 
 if not ss.uploaded_path:
     st.info("Devam etmek için bir araç fotoğrafı yükle.")
