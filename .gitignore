@@ -5,6 +5,11 @@ __pycache__/
 *.pt
 outputs/
 inputs/.tmp_*
+inputs/*.jpg
+inputs/*.jpeg
+inputs/*.png
+masks/*.png
+.DS_Store
 .claude/
 .drive_token.pickle
 google_oauth_client.json

@@ -9,6 +9,19 @@ from pathlib import Path
 import shutil
 
 import streamlit as st
+
+import streamlit.elements.image as _stl_img
+if not hasattr(_stl_img, "image_to_url"):
+    from streamlit.elements.lib.image_utils import image_to_url as _new_image_to_url
+    from streamlit.elements.lib.layout_utils import LayoutConfig as _StlLayoutConfig
+
+    def _image_to_url_shim(image, width, clamp, channels, output_format, image_id):
+        return _new_image_to_url(
+            image, _StlLayoutConfig(width=width), clamp, channels, output_format, image_id
+        )
+
+    _stl_img.image_to_url = _image_to_url_shim
+
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 

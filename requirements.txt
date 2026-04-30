@@ -12,3 +12,6 @@ timm>=0.9
 google-api-python-client>=2.100
 google-auth-oauthlib>=1.2
 google-auth-httplib2>=0.2
+opencv-python-headless>=4.8
+replicate>=0.25
+fal-client>=0.4
