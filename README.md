@@ -1,104 +1,192 @@
 # Canva Otomasyon — Araç Görseli Pipeline
 
-3rd party marketplace görsellerini otomatik üretir:
-**raw araç fotoğrafı → arka plan kaldır → amblem/plaka sil (LaMa) → şablona oturt → metin yaz → hazır PNG**
+3rd party marketplace araç görselleri otomatik üretir:
 
-## Kurulum (tek seferlik, ~10 dk)
+**raw araç fotoğrafı → amblem/plaka temizle → arka plan kaldır + AI shadow → şablona oturt → metin yaz → Google Drive'a yükle**
 
-### 1. Python 3.10+ kurulu olduğundan emin ol
+Streamlit GUI ile tek pencere üzerinden çalışır. AI auto-mask + manuel düzenleme hibrit akışı.
 
-```bash
-python --version    # 3.10+ olmalı
+---
+
+## Mimari
+
+```
+app.py (Streamlit GUI)
+   │
+   ├─► auto_mask.py
+   │     ├─ Replicate (adirik/grounding-dino)         → wheel + emblem bbox
+   │     └─ fal.ai (fal-ai/sam2/image)                → wheel mask refinement
+   │
+   ├─► pipeline.py
+   │     ├─ simple-lama-inpainting (lokal)            → mask alanlarını sil
+   │     ├─ PhotoRoom API (image-api.photoroom.com)   → bg removal + AI shadow + plate text removal
+   │     ├─ composite_on_template (PIL)               → mountain.png üstüne yerleştir
+   │     └─ update_text (PIL ImageDraw)               → alt banner: COMPATIBLE / TITLE / YEARS
+   │
+   └─► drive.py (Google Drive API)                    → Drive folder picker + upload
 ```
 
-Yoksa: https://www.python.org/downloads/
+**Eski CLI yöntemi** (`mask_tool.py` + `run.py`) hâlâ çalışır ama Streamlit ana akış olarak kullanılıyor.
 
-### 2. Bu klasöre gel ve paketleri kur
+---
+
+## Kullanılan ücretli servisler
+
+| Servis | Ne için | Maliyet/araç (yaklaşık) |
+|---|---|---|
+| **PhotoRoom API** | Background removal + AI Shadow Soft + plaka silme (`textRemoval.mode=ai.all`) | ~$0.10 (production), sandbox ücretsiz (watermark'lı) |
+| **Replicate** (`adirik/grounding-dino`) | Tekerlek + amblem **bbox tespiti** (text-prompted detection) | ~$0.005 |
+| **fal.ai** (`fal-ai/sam2/image`) | Tekerlek **gerçek mask** + inscribed circle merkezi | ~$0.005 (2 wheel × çağrı) |
+| **Toplam** | | **~$0.11/araç** (production) |
+
+Lokal/ücretsiz: LaMa inpainting (simple-lama-inpainting), Streamlit, PIL.
+
+---
+
+## Kurulum (tek seferlik)
+
+### 1. Python 3.13 + Tk
+
+```bash
+brew install python-tk@3.13
+```
+
+(macOS Homebrew Python 3.13 kullanıyor; mask_tool.py için Tk gerekiyor.)
+
+### 2. Venv + bağımlılıklar
 
 ```bash
 cd canva_otomasyon
-pip install -r requirements.txt
+/opt/homebrew/bin/python3.13 -m venv .venv
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install --no-deps simple-lama-inpainting   # numpy<2 sorunu için
+.venv/bin/pip install "rembg[cpu]"
 ```
 
-İlk çalıştırmada `rembg` ve `simple-lama-inpainting` modelleri internetten iner (~250 MB toplam, sadece bir kez).
+İlk kullanımda LaMa modeli (~196 MB) ve rembg ISNet modeli (~179 MB) inecektir.
 
-### 3. Şablonunu yerleştir
+### 3. API key'ler — `.env`
 
-`templates/mountain.png` olarak senin Canva-2 şablonunu (dağ panoraması, metin alanı boş) koy.
-İstersen başka şablonlar da ekle: `templates/forest.png`, `templates/desert.png` vb.
+Proje köküne `.env` oluştur:
 
-CSV'de hangi şablonu kullanacağın `template` kolonunda belirtilir.
+```
+PHOTOROOM_API_KEY=sandbox_sk_pr_default_...   # https://www.photoroom.com/api
+REPLICATE_API_TOKEN=r8_...                     # https://replicate.com/account/api-tokens
+FAL_KEY=<key_id>:<key_secret>                  # https://fal.ai/dashboard/keys
+```
 
-## İlk araç için (her yeni model = 1 kez yapılacak)
+Production'a geçiş: PhotoRoom sandbox key'i live key ile değiştir (watermark gider).
 
-1. Araç fotoğrafını `inputs/` klasörüne koy. Örn: `inputs/BMW-i5.jpg`
+### 4. Google Drive OAuth — `google_oauth_client.json`
 
-2. Maskeyi çiz (silinecek bölgeleri işaretle: ön amblem + jant amblemleri + plaka):
-   ```bash
-   python mask_tool.py inputs/BMW-i5.jpg
-   ```
-   - **Sol tık + sürükle**: silinecek yeri kırmızıyla boya
-   - **Sağ tık**: yanlış boyadığını sil
-   - **`[`** / **`]`**: fırça boyu
-   - **S**: kaydet ve çık (otomatik olarak `masks/BMW-i5.mask.png` olur)
-   - **Q**: kaydetmeden çık
+Çıktıyı Drive'a otomatik yüklemek için:
 
-3. `data.csv`'ye satır ekle:
-   ```csv
-   image,title,years,template,width_ratio
-   BMW-i5.jpg,BMW I5 SERIES G60,2024-2028,mountain,0.55
-   ```
+1. https://console.cloud.google.com → proje seç
+2. APIs & Services → Library → "Google Drive API" → Enable
+3. APIs & Services → OAuth consent screen → External
+   - Test users sekmesinde **Drive'a yazılacak hesabı** ekle
+4. APIs & Services → Credentials → "+ CREATE CREDENTIALS" → OAuth client ID
+   - Application type: **Desktop app**
+   - DOWNLOAD JSON
+5. JSON'ı `google_oauth_client.json` adıyla proje köküne koy
+
+İlk çalıştırmada tarayıcıda OAuth onay ekranı açılır → hedef Drive hesabını seç → "Allow". Token `.drive_token.pickle`'a saklanır, sonraki çağrılarda otomatik kullanılır.
+
+`google_oauth_client.json` yoksa Drive bölümü pasif kalır, çıktı sadece lokal `outputs/`'a yazılır.
+
+### 5. Şablon
+
+`templates/mountain.png` proje ile birlikte gelir (dağ panoraması template). Yeni şablonlar `templates/<isim>.png` olarak eklenebilir; şu an Streamlit GUI hardcoded olarak `mountain.png` kullanıyor.
+
+---
 
 ## Çalıştırma
 
-**Tüm CSV'yi işle:**
 ```bash
-python run.py
+.venv/bin/streamlit run app.py
 ```
 
-**Tek satır:**
+Tarayıcıda otomatik `http://localhost:8501` açılır.
+
+### GUI akışı
+
+1. **📂 Bilgisayardan yükle** → araç fotoğrafı seç (jpg/png)
+2. **Mask çiz** (silinecek bölgeler):
+   - **🎯 AI ile otomatik mask** — Replicate GroundingDINO + fal.ai SAM2 ile **2 jant logosu + 1 ön/arka amblem** otomatik tespit (~6 sn). Plaka mask'a girmez (PhotoRoom otomatik silecek).
+   - **🔴 Daire çiz** — tek tıkla-sürükle ile daire ekle
+   - **✏️ Boya** — serbest çizim
+   - **↔️ Taşı/Boyutlandır** — mevcut daireleri ayarla
+3. **Araç bilgisi** → "BMW I5 SERIES G60 2024-2028" gibi yapıştır → otomatik parse (title + years)
+4. **Google Drive klasörü** seç (opsiyonel)
+5. **🚀 İşle ve üret** — ~17 sn:
+   - LaMa inpaint (mask alanları silinir)
+   - PhotoRoom (bg + shadow + plate text)
+   - Mountain template + alt metin
+   - `outputs/<image>_<years>.jpg` kaydedilir
+   - Drive klasörü seçildiyse oraya yüklenir
+
+### Eski CLI yöntemi (yedek)
+
 ```bash
-python run.py --row 1
-python run.py --only BMW-i5.jpg
+.venv/bin/python mask_tool.py inputs/<image>.jpg   # Tk pencerede mask çiz
+# data.csv satırı eklendikten sonra:
+.venv/bin/python run.py --only <image>.jpg
 ```
 
-**Daha önce üretilenleri atla (yeni eklenenleri işle):**
-```bash
-python run.py --skip-existing
+---
+
+## Dosya yapısı
+
+```
+canva_otomasyon/
+├── app.py                    # Streamlit GUI (ana akış)
+├── pipeline.py               # process_one + photoroom_edit + composite + text
+├── auto_mask.py              # Replicate GroundingDINO + fal.ai SAM2
+├── drive.py                  # Google Drive auth + folder list + upload
+├── mask_tool.py              # Tk-based mask editor (eski CLI)
+├── run.py                    # CSV batch runner (eski CLI)
+├── templates/mountain.png    # Şablon
+├── inputs/                   # (runtime — uploaded fotos)
+├── masks/                    # (runtime — drawn/AI masks)
+├── outputs/                  # (runtime — final JPGs, gitignore)
+├── data.csv                  # CSV CLI yöntemi için
+├── requirements.txt
+├── .env                      # API keys (gitignore)
+├── google_oauth_client.json  # Drive OAuth (gitignore)
+└── .drive_token.pickle       # Drive token (gitignore, auto-generated)
 ```
 
-Çıktılar: `outputs/BMW-i5_2024-2028.jpg`
+`.gitignore` korur: `.env`, `.venv/`, `*.pt`, `outputs/`, OAuth dosyaları.
 
-## CSV Kolonları
+---
 
-| Kolon | Zorunlu | Açıklama |
-|---|---|---|
-| `image` | ✓ | `inputs/` içindeki dosya adı |
-| `title` | ✓ | Alt başlık (örn: "BMW I5 SERIES G60") |
-| `years` | ✓ | Yıl aralığı (örn: "2024-2028") |
-| `template` | – | `templates/` içindeki PNG adı (uzantısız), default: `default` |
-| `width_ratio` | – | Aracın görsel içindeki genişlik oranı (0.40 - 0.65), default: `0.55` |
+## Bilinen sınırlamalar
 
-## İnce ayar
+- **AI auto-mask kabaca doğru** — daireler %80 doğru yere konur, son rötuşu kullanıcı "Taşı/Boyutlandır" ile ~5 sn'de yapar. 3D perspektif kayması için manuel düzeltme şart.
+- **netcarshow.com URL'den çekilemiyor** — site agresif anti-bot uyguluyor (Playwright/CDP/stealth bile aşamadı, IP ban yiyoruz). Bu site için **Save Image As + Upload** manuel yol kullanılmalı. Diğer sitelerden URL ile çekme şu an UI'da yok ama `requests.get` ile basitçe eklenebilir.
+- **Tek template (`mountain.png`)** hardcoded. Şablon seçici GUI ileride.
+- **Sandbox PhotoRoom watermark** — production key alındığında kaybolur.
+- **macOS only**: Homebrew Python + Tk varsayımı; Linux/Windows için path'ler değişir.
 
-**Aracın pozisyonu / boyutu yanlışsa:** CSV'de `width_ratio`'yu değiştir, ya da `pipeline.py` içindeki `composite_on_template` çağrısının `center_x`, `center_y` değerlerini değiştir.
-
-**Metin pozisyonu / fontu / rengi:** `pipeline.py` içindeki `update_text` fonksiyonunda. İstersen bunları da config dosyasına çıkarabilirim.
-
-**Gölge daha koyu / daha açık:** `make_shadow(opacity=...)` (default 0.45).
-
-## Performans
-
-- İlk araç: ~30 sn (modeller cache'leniyor)
-- Sonraki araçlar: ~3-5 sn / araç (CPU üzerinde)
-- GPU varsa: ~1-2 sn / araç (rembg ve LaMa otomatik CUDA kullanır)
-
-200 araç ≈ 15 dk (CPU), ≈ 5 dk (GPU).
+---
 
 ## Sorun giderme
 
-**"isnet-general-use modeli inmedi"**: İlk çalıştırmada GitHub'dan iner. Network engelliyorsa VPN dene.
+| Belirti | Çözüm |
+|---|---|
+| `ModuleNotFoundError: _tkinter` | `brew install python-tk@3.13` çalıştırılmamış |
+| `pip install` `numpy<2` çakışması | `simple-lama-inpainting`'i `--no-deps` ile yükle |
+| `rembg`: "No onnxruntime backend" | `pip install "rembg[cpu]"` |
+| Drive bölümü "yapılandırılmamış" | `google_oauth_client.json` proje köküne koy + restart |
+| OAuth "App not verified" | Cloud Console → OAuth consent screen → Test users → hesabı ekle, "Continue (unsafe)" |
+| `cannot open resource` (font) | `pipeline.py` macOS Arial fallback'i ile ayarlı; Linux'ta DejaVu yolu |
 
-**LaMa kalitesi düşük**: Maskeni biraz daha **GENİŞ** yap — silinecek bölgenin 5-10px etrafını da kapsa. LaMa, kenardaki dokuyu örnek alarak doldurur, dar maskede artefakt çıkar.
+---
 
-**Aracın altı sert kesilmiş görünüyor**: rembg'in kesimi temizdir, ama "rembg-greenscreen" yerine `isnet-general-use` modelini kullandığından emin ol (`pipeline.py` → `get_rembg_session` fonksiyonu).
+## Geliştirme notları
+
+- **Sırlar git'e gitmesin:** `.env`, `google_oauth_client.json`, `.drive_token.pickle` `.gitignore`'da
+- **Repo:** https://github.com/ozguraltuntas/canva-automation
+- **Test verisi:** `inputs/`, `masks/`, `outputs/` klasörleri runtime — repo'da boş tutulur (`.gitkeep`)
+- **Production geçişi:** PhotoRoom sandbox → live key (`.env` güncelle), gerisi çalışır
