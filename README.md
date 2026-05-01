@@ -21,7 +21,7 @@ app.py (Streamlit GUI)
    │     ├─ simple-lama-inpainting (lokal)            → mask alanlarını sil
    │     ├─ PhotoRoom API (image-api.photoroom.com)   → bg removal + AI shadow + plate text removal
    │     ├─ composite_on_template (PIL)               → mountain.png üstüne yerleştir
-   │     └─ update_text (PIL ImageDraw)               → alt banner: COMPATIBLE / TITLE / YEARS
+   │     └─ update_text (PIL ImageDraw)               → alt banner: COMPATIBLE (Arial) / TITLE (Bebas Neue 125 #004aad) / YEARS (Bebas Neue 77.5 #4b9ddc)
    │
    └─► drive.py (Google Drive API)                    → Drive folder picker + upload
 ```
@@ -34,12 +34,14 @@ app.py (Streamlit GUI)
 
 | Servis | Ne için | Maliyet/araç (yaklaşık) |
 |---|---|---|
-| **PhotoRoom API** | Background removal + AI Shadow Soft + plaka silme (`textRemoval.mode=ai.all`) | ~$0.10 (production), sandbox ücretsiz (watermark'lı) |
+| **PhotoRoom API** (Plus plan) | Background removal + AI Shadow Soft + plaka silme (`textRemoval.mode=ai.all`) | $0.10 — **Plus plan aktif** ($100/ay, 1000 image kotası, AI Shadows + GenAI dahil) |
 | **Replicate** (`adirik/grounding-dino`) | Tekerlek + amblem **bbox tespiti** (text-prompted detection) | ~$0.005 |
 | **fal.ai** (`fal-ai/sam2/image`) | Tekerlek **gerçek mask** + inscribed circle merkezi | ~$0.005 (2 wheel × çağrı) |
 | **Toplam** | | **~$0.11/araç** (production) |
 
 Lokal/ücretsiz: LaMa inpainting (simple-lama-inpainting), Streamlit, PIL.
+
+PhotoRoom kotasını kontrol: `curl -H "x-api-key: $PHOTOROOM_API_KEY" https://image-api.photoroom.com/v2/account` → `{"images":{"available":N,"subscription":1000},"plan":"plus"}`. **Basic plan ($20/ay) yeterli değil** — AI Shadows ve GenAI text removal özellikleri sadece Plus tier'da var.
 
 ---
 
@@ -71,12 +73,12 @@ cd canva_otomasyon
 Proje köküne `.env` oluştur:
 
 ```
-PHOTOROOM_API_KEY=sandbox_sk_pr_default_...   # https://www.photoroom.com/api
+PHOTOROOM_API_KEY=sk_pr_default_...            # live key (Plus plan aktif) — https://www.photoroom.com/api
 REPLICATE_API_TOKEN=r8_...                     # https://replicate.com/account/api-tokens
 FAL_KEY=<key_id>:<key_secret>                  # https://fal.ai/dashboard/keys
 ```
 
-Production'a geçiş: PhotoRoom sandbox key'i live key ile değiştir (watermark gider).
+PhotoRoom Plus plan halihazırda aktif (1000 image/ay). Yeni bir kuruluma geçiyorsan kendi live key'ini (`sk_pr_default_...`, `sandbox_` prefix'siz) kullan; sandbox key kullanırsan watermark üretir ve `textRemoval`/`shadow.ai.soft` çalışmaz.
 
 ### 4. Google Drive OAuth — `google_oauth_client.json`
 
@@ -98,6 +100,20 @@ Production'a geçiş: PhotoRoom sandbox key'i live key ile değiştir (watermark
 ### 5. Şablon
 
 `templates/mountain.png` proje ile birlikte gelir (dağ panoraması template). Yeni şablonlar `templates/<isim>.png` olarak eklenebilir; şu an Streamlit GUI hardcoded olarak `mountain.png` kullanıyor.
+
+### 6. Bebas Neue font (repo'da bundled)
+
+`templates/fonts/BebasNeue-Regular.ttf` repo ile birlikte gelir (Google Fonts, OFL lisans). `pipeline.py:172` `BEBAS_FONT` constant bu yolu kullanıyor — title ve years metni bu fontla render edilir.
+
+Font silinirse / yeniden indirmen gerekirse:
+
+```bash
+mkdir -p templates/fonts
+curl -sSL -o templates/fonts/BebasNeue-Regular.ttf \
+  https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf
+```
+
+Bebas Neue Google Fonts'ta sadece Regular ağırlıkta gelir (Bold varyantı paid Bebas Neue Pro'da). Doğal olarak kalın display fontu olduğu için "bold" görünüm zaten elde ediliyor.
 
 ---
 
@@ -122,7 +138,7 @@ Tarayıcıda otomatik `http://localhost:8501` açılır.
 5. **🚀 İşle ve üret** — ~17 sn:
    - LaMa inpaint (mask alanları silinir)
    - PhotoRoom (bg + shadow + plate text)
-   - Mountain template + alt metin
+   - Mountain template + alt metin (Bebas Neue: title 125px cobalt #004aad, years 77.5px azure #4b9ddc)
    - `outputs/<image>_<years>.jpg` kaydedilir
    - Drive klasörü seçildiyse oraya yüklenir
 
@@ -147,6 +163,7 @@ canva_otomasyon/
 ├── mask_tool.py              # Tk-based mask editor (eski CLI)
 ├── run.py                    # CSV batch runner (eski CLI)
 ├── templates/mountain.png    # Şablon
+├── templates/fonts/BebasNeue-Regular.ttf  # Title + years fontu (Google Fonts OFL)
 ├── inputs/                   # (runtime — uploaded fotos)
 ├── masks/                    # (runtime — drawn/AI masks)
 ├── outputs/                  # (runtime — final JPGs, gitignore)
@@ -166,7 +183,6 @@ canva_otomasyon/
 - **AI auto-mask kabaca doğru** — daireler %80 doğru yere konur, son rötuşu kullanıcı "Taşı/Boyutlandır" ile ~5 sn'de yapar. 3D perspektif kayması için manuel düzeltme şart.
 - **netcarshow.com URL'den çekilemiyor** — site agresif anti-bot uyguluyor (Playwright/CDP/stealth bile aşamadı, IP ban yiyoruz). Bu site için **Save Image As + Upload** manuel yol kullanılmalı. Diğer sitelerden URL ile çekme şu an UI'da yok ama `requests.get` ile basitçe eklenebilir.
 - **Tek template (`mountain.png`)** hardcoded. Şablon seçici GUI ileride.
-- **Sandbox PhotoRoom watermark** — production key alındığında kaybolur.
 - **macOS only**: Homebrew Python + Tk varsayımı; Linux/Windows için path'ler değişir.
 
 ---
@@ -189,4 +205,4 @@ canva_otomasyon/
 - **Sırlar git'e gitmesin:** `.env`, `google_oauth_client.json`, `.drive_token.pickle` `.gitignore`'da
 - **Repo:** https://github.com/ozguraltuntas/canva-automation
 - **Test verisi:** `inputs/`, `masks/`, `outputs/` klasörleri runtime — repo'da boş tutulur (`.gitkeep`)
-- **Production geçişi:** PhotoRoom sandbox → live key (`.env` güncelle), gerisi çalışır
+- **PhotoRoom Plus aktif** — kota: 1000 image/ay. Kalan kota: PhotoRoom dashboard veya `curl -H "x-api-key: $PHOTOROOM_API_KEY" https://image-api.photoroom.com/v2/account`

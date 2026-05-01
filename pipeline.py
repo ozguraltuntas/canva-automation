@@ -169,12 +169,16 @@ def composite_on_template(car_rgba: Image.Image, template_path: Path,
     return canvas
 
 
+BEBAS_FONT = Path(__file__).parent / "templates" / "fonts" / "BebasNeue-Regular.ttf"
+
+
 def update_text(canvas: Image.Image, title: str, years: str,
                 label: str = "COMPATIBLE",
-                font_bold: str = None, font_regular: str = None,
+                font_bold: str = None,
                 cover_top_ratio: float = 0.795,
-                dark_color=(15, 49, 128, 255),
-                light_color=(94, 153, 217, 255)) -> Image.Image:
+                title_color=(0, 74, 173, 255),
+                years_color=(75, 157, 220, 255),
+                label_color=(15, 49, 128, 255)) -> Image.Image:
     """Alt metin alanını beyazla kapat, yeni metni yaz."""
     canvas = canvas.copy()
     T_W, T_H = canvas.size
@@ -189,18 +193,16 @@ def update_text(canvas: Image.Image, title: str, years: str,
             "/System/Library/Fonts/Supplemental/Arial Bold.ttf",     # macOS
         ]
         font_bold = next((p for p in candidates if Path(p).exists()), candidates[0])
-    if not font_regular:
-        font_regular = font_bold.replace("-Bold", "").replace(" Bold", "")
-    
+
     label_f = ImageFont.truetype(font_bold, int(T_H * 0.022))
-    title_f = ImageFont.truetype(font_bold, int(T_H * 0.055))
-    year_f = ImageFont.truetype(font_regular, int(T_H * 0.026))
-    
+    title_f = ImageFont.truetype(str(BEBAS_FONT), 125)
+    year_f = ImageFont.truetype(str(BEBAS_FONT), 77.5)
+
     xt = int(T_W * 0.04)
-    draw.text((xt, int(T_H * 0.840)), label, font=label_f, fill=dark_color)
-    draw.text((xt, int(T_H * 0.880)), title, font=title_f, fill=dark_color)
-    draw.text((xt, int(T_H * 0.955)), years, font=year_f, fill=light_color)
-    
+    draw.text((xt, int(T_H * 0.840)), label, font=label_f, fill=label_color)
+    draw.text((xt, int(T_H * 0.880)), title, font=title_f, fill=title_color)
+    draw.text((xt, int(T_H * 0.955)), years, font=year_f, fill=years_color)
+
     return canvas
 
 
