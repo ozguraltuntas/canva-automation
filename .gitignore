@@ -13,3 +13,5 @@ masks/*.png
 .claude/
 .drive_token.pickle
 google_oauth_client.json
+app_config.json
+.drive_cache/

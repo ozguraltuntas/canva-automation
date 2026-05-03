@@ -1,51 +1,155 @@
-# Canva Otomasyon — Araç Görseli Pipeline
+# Canva Otomasyon — Araç Görseli + Content.docx Pipeline
 
-3rd party marketplace araç görselleri otomatik üretir:
+Amazon / eBay / 3rd party marketplace ürünleri için **iki çıktı** üretir:
 
-**raw araç fotoğrafı → amblem/plaka temizle → arka plan kaldır + AI shadow → şablona oturt → metin yaz → Google Drive'a yükle**
+1. **Araç görseli** — `raw araç fotoğrafı → amblem/plaka temizle → arka plan kaldır + AI shadow → mountain template'e oturt → Bebas Neue text → Drive`
+2. **Content.docx** — `standart_images + raw foto + Text edit.docx + user notes → Claude/OpenAI vision → TITLE / 5 BULLETS / DESCRIPTION / GENERIC KEYWORDS → docx → Drive`
 
-Streamlit GUI ile tek pencere üzerinden çalışır. AI auto-mask + manuel düzenleme hibrit akışı.
+Streamlit GUI tek pencere üzerinden çalışır, 3 tab: **🚗 Araç Görseli / 📝 Content.docx / ⚙️ Ayarlar**.
 
 ---
 
 ## Mimari
 
+### 3 tab
+
 ```
-app.py (Streamlit GUI)
-   │
-   ├─► auto_mask.py
-   │     ├─ Replicate (adirik/grounding-dino)         → wheel + emblem bbox
-   │     └─ fal.ai (fal-ai/sam2/image)                → wheel mask refinement
-   │
-   ├─► pipeline.py
-   │     ├─ simple-lama-inpainting (lokal)            → mask alanlarını sil
-   │     ├─ PhotoRoom API (image-api.photoroom.com)   → bg removal + AI shadow + plate text removal
-   │     ├─ composite_on_template (PIL)               → mountain.png üstüne yerleştir
-   │     └─ update_text (PIL ImageDraw)               → alt banner: COMPATIBLE (Arial) / TITLE (Bebas Neue 125 #004aad) / YEARS (Bebas Neue 77.5 #4b9ddc)
-   │
-   └─► drive.py (Google Drive API)                    → Drive folder picker + upload
+🚗 Araç Görseli                          📝 Content.docx                    ⚙️ Ayarlar
+─────────────────                        ────────────────                   ──────────
+Brand picker (üstte)                     Brand picker (üstte)               Default LLM seçimi
+1. Foto yükle                            Category dropdown                  API key durumu
+2. Mask çiz (manuel veya AI auto)        ↳ standart_images thumbnails       Drive cache temizle
+3. Title + years gir                     ↳ Text edit.docx preview           content_prompt.md edit
+4. Drive hedef (Cat→Parent→Child)        Parent (model) dropdown
+5. İşle ve üret → 5.jpg                  ↳ raw thumbnails
+   → Drive'a yüklenir                    Child (part_number) dropdown
+                                         Notlar + OEM input + checkboxlar
+                                         🚀 Üret → 4 bölüm (edit edilebilir)
+                                         💾 Drive'a Content.docx upload
 ```
 
-**Eski CLI yöntemi** (`mask_tool.py` + `run.py`) hâlâ çalışır ama Streamlit ana akış olarak kullanılıyor.
+Brand seçimi **iki tab arasında paylaşılır** (config üzerinden). Aynı şekilde
+seçilen Category/Parent/Child da senkronize olur — Vehicle tab'da seçim yaptığında
+Content tab'da da geçerli olur (ve tersi).
+
+### Kod path'i
+
+```
+app.py (Streamlit GUI)
+├─ render_vehicle_tab()
+│   ├─ _render_brand_picker("v")             ← Drive folder browser, brand seçer
+│   ├─ st_canvas mask çiz / auto_mask        ← Replicate GroundingDINO + fal.ai SAM2
+│   ├─ _render_drive_hierarchy_picker("v")   ← Cat/Parent/Child dropdownları (step 4)
+│   └─ pipeline.process_one()
+│       ├─ simple-lama-inpainting (lokal)    ← mask alanlarını sil
+│       ├─ PhotoRoom Plus API                ← bg removal + AI shadow + plate text removal
+│       ├─ composite_on_template (PIL)       ← mountain.png üstüne yerleştir
+│       └─ update_text (PIL ImageDraw)       ← title (Bebas 125 #004aad) + years (Bebas 77.5 #4b9ddc)
+│
+├─ render_content_tab()
+│   ├─ _render_brand_picker("c")             ← aynı brand picker
+│   ├─ Category dropdown                     ← drive_cache.sync_category_assets()
+│   │     standart_images thumbnails + Text edit.docx preview
+│   ├─ Parent (model) dropdown               ← drive_cache.sync_parent_raw()
+│   │     raw thumbnails
+│   ├─ Child (part_number) dropdown
+│   └─ @st.fragment _render_content_io_fragment()
+│       ├─ Notlar + OEM input + 2 OEM checkbox
+│       ├─ 🚀 Üret → content_pipeline.generate_content()
+│       │   ├─ collect_images()              ← .drive_cache path'lerinden image listesi
+│       │   ├─ call_claude / call_openai     ← base64 vision API
+│       │   ├─ parse_llm_output()            ← TITLE/BULLETS/DESC/KEYWORDS regex split
+│       │   ├─ apply_oem()                   ← title/keywords sonuna OEM ekle
+│       │   └─ validate_lengths()            ← 200/250 char check (uyarı)
+│       └─ 💾 → content_pipeline.save_content_docx() + drive.upload_file_strict()
+│
+└─ render_settings_tab()
+    Default LLM (Claude/OpenAI), API key durumu, .drive_cache temizle, prompt edit
+```
+
+### Drive klasör hiyerarşisi
+
+```
+Silbak/                              ← brand_folder (her tab üstünde picker)
+└── wiper blade/                     ← category (dropdown, "standart_images" hariç)
+    ├── standart_images/             ← LLM'e gidecek brand görselleri
+    ├── Text edit.docx               ← LLM'e gidecek metadata (otoriter — aşağıya bkz)
+    └── SB2622B/                     ← parent / model (dropdown, "raw" hariç)
+        ├── raw/                     ← telefon fotoları (LLM'e gider)
+        ├── SB2622BA/                ← child = part_number (dropdown, hedef klasör)
+        │   ├── Content.docx         ← üretilen
+        │   └── 5.jpg                ← üretilen
+        └── SB2622BB/
+```
+
+**Nereye ne yüklenir:**
+- `5.jpg` → seçili child klasörü (`last_child_id`)
+- `Content.docx` → seçili child klasörü
+- Drive'da aynı isimde dosya varsa **kırmızı uyarı**, yüklenmez (LLM çağrısı bile yapılmaz, kota harcanmasın diye)
+
+---
+
+## Dosya yapısı
+
+```
+canva-automation/
+├── app.py                          # Streamlit GUI (3 tab) — 840+ satır
+├── pipeline.py                     # Araç görseli üretimi (LaMa + PhotoRoom + composite + text)
+├── content_pipeline.py             # ★ YENİ — LLM (Claude/OpenAI vision) + parse + OEM + docx
+├── drive.py                        # ★ EXTENDED — list_files, find_child_by_name, download_file,
+│                                   #              file_exists, upload_file_strict
+├── drive_cache.py                  # ★ YENİ — Drive folder → .drive_cache/ sync (mtime-based)
+├── config.py                       # ★ YENİ — app_config.json read/write helpers (persisted UI state)
+├── content_prompt.md               # ★ YENİ — Amazon listing prompt'u (Settings'ten edit edilebilir)
+├── auto_mask.py                    # Replicate GroundingDINO + fal.ai SAM2 (araç görseli için)
+├── mask_tool.py                    # Tk-based mask editor (eski CLI yöntemi — yedek)
+├── run.py                          # CSV batch runner (eski CLI — yedek)
+├── templates/
+│   ├── mountain.png                # araç görseli şablonu (hardcoded)
+│   └── fonts/BebasNeue-Regular.ttf # title + years fontu
+├── inputs/                         # runtime — yüklenen fotoğraflar
+├── masks/                          # runtime — çizilen mask'lar
+├── outputs/                        # runtime — üretilen 5.jpg + Content.docx (gitignore)
+├── .drive_cache/                   # ★ YENİ — Drive'dan indirilen görseller (gitignore)
+├── data.csv                        # eski CSV CLI yöntemi için
+├── app_config.json                 # ★ YENİ — runtime UI state (gitignore)
+│                                   #   brand_folder_id, llm_provider, last_category/parent/child_id
+├── requirements.txt                # + anthropic, openai, python-docx
+├── .env                            # API keys (gitignore)
+├── google_oauth_client.json        # Drive OAuth (gitignore)
+└── .drive_token.pickle             # Drive token (gitignore, auto-generated)
+```
+
+`.gitignore` korur: `.env`, `.venv/`, `*.pt`, `outputs/`, `app_config.json`, `.drive_cache/`, OAuth dosyaları.
 
 ---
 
 ## Kullanılan ücretli servisler
 
-| Servis | Ne için | Maliyet/araç (yaklaşık) |
+### Araç görseli pipeline (mevcut)
+
+| Servis | Ne için | Maliyet/araç |
 |---|---|---|
-| **PhotoRoom API** (Plus plan) | Background removal + AI Shadow Soft + plaka silme (`textRemoval.mode=ai.all`) | $0.10 — **Plus plan aktif** ($100/ay, 1000 image kotası, AI Shadows + GenAI dahil) |
-| **Replicate** (`adirik/grounding-dino`) | Tekerlek + amblem **bbox tespiti** (text-prompted detection) | ~$0.005 |
-| **fal.ai** (`fal-ai/sam2/image`) | Tekerlek **gerçek mask** + inscribed circle merkezi | ~$0.005 (2 wheel × çağrı) |
-| **Toplam** | | **~$0.11/araç** (production) |
+| **PhotoRoom Plus** | bg removal + AI Shadow Soft + `textRemoval.mode=ai.all` (plaka silme) | $0.10 ($100/ay 1000 image kotası) |
+| **Replicate** (`adirik/grounding-dino`) | tekerlek + amblem bbox tespiti | ~$0.005 |
+| **fal.ai** (`fal-ai/sam2/image`) | tekerlek mask refinement | ~$0.005 |
 
-Lokal/ücretsiz: LaMa inpainting (simple-lama-inpainting), Streamlit, PIL.
+PhotoRoom Plus zorunlu — Basic plan'da AI Shadows ve GenAI text removal yok.
+Kota kontrolü: `curl -H "x-api-key: $PHOTOROOM_API_KEY" https://image-api.photoroom.com/v2/account`
 
-PhotoRoom kotasını kontrol: `curl -H "x-api-key: $PHOTOROOM_API_KEY" https://image-api.photoroom.com/v2/account` → `{"images":{"available":N,"subscription":1000},"plan":"plus"}`. **Basic plan ($20/ay) yeterli değil** — AI Shadows ve GenAI text removal özellikleri sadece Plus tier'da var.
+### Content.docx pipeline (yeni)
+
+| Servis | Ne için | Model |
+|---|---|---|
+| **Anthropic Claude** | TITLE / BULLETS / DESCRIPTION / KEYWORDS üretimi (vision) | `claude-opus-4-7` (1M context) |
+| **OpenAI** | aynı, alternatif | `gpt-5.5` (1M context) — ⚠️ uçtan uca doğrulanmadı |
+
+Default LLM Settings tab'ından seçilir (`app_config.json`'a kaydedilir).
+Combobox'tan tek seferlik değişim yok — global default.
 
 ---
 
-## Kurulum (tek seferlik)
+## Kurulum
 
 ### 1. Python 3.13 + Tk
 
@@ -53,12 +157,10 @@ PhotoRoom kotasını kontrol: `curl -H "x-api-key: $PHOTOROOM_API_KEY" https://i
 brew install python-tk@3.13
 ```
 
-(macOS Homebrew Python 3.13 kullanıyor; mask_tool.py için Tk gerekiyor.)
-
 ### 2. Venv + bağımlılıklar
 
 ```bash
-cd canva_otomasyon
+cd canva-automation
 /opt/homebrew/bin/python3.13 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
@@ -66,54 +168,31 @@ cd canva_otomasyon
 .venv/bin/pip install "rembg[cpu]"
 ```
 
-İlk kullanımda LaMa modeli (~196 MB) ve rembg ISNet modeli (~179 MB) inecektir.
+İlk kullanımda LaMa modeli (~196 MB) ve rembg ISNet (~179 MB) inecektir.
 
-### 3. API key'ler — `.env`
-
-Proje köküne `.env` oluştur:
+### 3. `.env` dosyası
 
 ```
-PHOTOROOM_API_KEY=sk_pr_default_...            # live key (Plus plan aktif) — https://www.photoroom.com/api
-REPLICATE_API_TOKEN=r8_...                     # https://replicate.com/account/api-tokens
-FAL_KEY=<key_id>:<key_secret>                  # https://fal.ai/dashboard/keys
+PHOTOROOM_API_KEY=sk_pr_default_...     # PhotoRoom Plus live key
+REPLICATE_API_TOKEN=r8_...
+FAL_KEY=<key_id>:<key_secret>
+ANTHROPIC_API_KEY=sk-ant-...            # Content.docx için
+OPENAI_API_KEY=sk-...                   # Content.docx için (opsiyonel)
 ```
 
-PhotoRoom Plus plan halihazırda aktif (1000 image/ay). Yeni bir kuruluma geçiyorsan kendi live key'ini (`sk_pr_default_...`, `sandbox_` prefix'siz) kullan; sandbox key kullanırsan watermark üretir ve `textRemoval`/`shadow.ai.soft` çalışmaz.
+İkisinden en az biri gerekli (default olarak hangisi seçildiyse). Diğeri eksikse
+o LLM seçilemez.
 
-### 4. Google Drive OAuth — `google_oauth_client.json`
+### 4. Google Drive OAuth
 
-Çıktıyı Drive'a otomatik yüklemek için:
+`google_oauth_client.json` proje köküne — Cloud Console → Desktop OAuth client.
+SCOPES: `drive.file` + `drive.readonly`.
 
-1. https://console.cloud.google.com → proje seç
-2. APIs & Services → Library → "Google Drive API" → Enable
-3. APIs & Services → OAuth consent screen → External
-   - Test users sekmesinde **Drive'a yazılacak hesabı** ekle
-4. APIs & Services → Credentials → "+ CREATE CREDENTIALS" → OAuth client ID
-   - Application type: **Desktop app**
-   - DOWNLOAD JSON
-5. JSON'ı `google_oauth_client.json` adıyla proje köküne koy
+İlk çalıştırmada tarayıcıda OAuth ekranı, token `.drive_token.pickle`'a saklanır.
 
-İlk çalıştırmada tarayıcıda OAuth onay ekranı açılır → hedef Drive hesabını seç → "Allow". Token `.drive_token.pickle`'a saklanır, sonraki çağrılarda otomatik kullanılır.
+### 5. Şablon ve font
 
-`google_oauth_client.json` yoksa Drive bölümü pasif kalır, çıktı sadece lokal `outputs/`'a yazılır.
-
-### 5. Şablon
-
-`templates/mountain.png` proje ile birlikte gelir (dağ panoraması template). Yeni şablonlar `templates/<isim>.png` olarak eklenebilir; şu an Streamlit GUI hardcoded olarak `mountain.png` kullanıyor.
-
-### 6. Bebas Neue font (repo'da bundled)
-
-`templates/fonts/BebasNeue-Regular.ttf` repo ile birlikte gelir (Google Fonts, OFL lisans). `pipeline.py:172` `BEBAS_FONT` constant bu yolu kullanıyor — title ve years metni bu fontla render edilir.
-
-Font silinirse / yeniden indirmen gerekirse:
-
-```bash
-mkdir -p templates/fonts
-curl -sSL -o templates/fonts/BebasNeue-Regular.ttf \
-  https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf
-```
-
-Bebas Neue Google Fonts'ta sadece Regular ağırlıkta gelir (Bold varyantı paid Bebas Neue Pro'da). Doğal olarak kalın display fontu olduğu için "bold" görünüm zaten elde ediliyor.
+`templates/mountain.png` ve `templates/fonts/BebasNeue-Regular.ttf` repo ile gelir.
 
 ---
 
@@ -123,67 +202,129 @@ Bebas Neue Google Fonts'ta sadece Regular ağırlıkta gelir (Bold varyantı pai
 .venv/bin/streamlit run app.py
 ```
 
-Tarayıcıda otomatik `http://localhost:8501` açılır.
-
-### GUI akışı
-
-1. **📂 Bilgisayardan yükle** → araç fotoğrafı seç (jpg/png)
-2. **Mask çiz** (silinecek bölgeler):
-   - **🎯 AI ile otomatik mask** — Replicate GroundingDINO + fal.ai SAM2 ile **2 jant logosu + 1 ön/arka amblem** otomatik tespit (~6 sn). Plaka mask'a girmez (PhotoRoom otomatik silecek).
-   - **🔴 Daire çiz** — tek tıkla-sürükle ile daire ekle
-   - **✏️ Boya** — serbest çizim
-   - **↔️ Taşı/Boyutlandır** — mevcut daireleri ayarla
-3. **Araç bilgisi** → "BMW I5 SERIES G60 2024-2028" gibi yapıştır → otomatik parse (title + years)
-4. **Google Drive klasörü** seç (opsiyonel)
-5. **🚀 İşle ve üret** — ~17 sn:
-   - LaMa inpaint (mask alanları silinir)
-   - PhotoRoom (bg + shadow + plate text)
-   - Mountain template + alt metin (Bebas Neue: title 125px cobalt #004aad, years 77.5px azure #4b9ddc)
-   - `outputs/<image>_<years>.jpg` kaydedilir
-   - Drive klasörü seçildiyse oraya yüklenir
-
-### Eski CLI yöntemi (yedek)
-
-```bash
-.venv/bin/python mask_tool.py inputs/<image>.jpg   # Tk pencerede mask çiz
-# data.csv satırı eklendikten sonra:
-.venv/bin/python run.py --only <image>.jpg
-```
+`http://localhost:8501` otomatik açılır.
 
 ---
 
-## Dosya yapısı
+## Content.docx üretimi — uçtan uca akış
+
+1. **⚙️ Ayarlar → Default LLM** — Claude veya OpenAI seç.
+2. **🚗 Araç Görseli veya 📝 Content.docx tab** — sayfanın en üstündeki **brand picker**'dan
+   brand klasörünü seç (örn. `Silbak`). Brand iki tab arasında paylaşılır.
+3. **Category dropdown** — `wiper blade` vb. seç. Otomatik olarak:
+   - `standart_images/` içeriği `.drive_cache/categories/{cat_id}/standart_images/`'a indirilir
+   - `Text edit.docx` indirilir, preview'i görünür
+4. **Parent (model) dropdown** — `SB2622B` vb. seç. `raw/` içeriği indirilir, thumbnails görünür.
+5. **Child (part_number) dropdown** — `SB2622BA` vb. seç. Bu **hedef klasör** (Content.docx + 5.jpg buraya).
+6. **Notlar** — ürüne özel bilgi (örn. `Mercedes-Benz GL-Class 2006-2012`)
+7. **OEM kod(lar)** — literal append için (örn. `A2518200845 A1234567890`)
+   - "Title sonuna ekle" / "Generic Keywords sonuna ekle" checkbox'larıyla seç
+8. **🚀 Content.docx üret** — Drive ön-kontrol (varsa LLM çağrılmaz), sonra Claude/OpenAI çağrılır,
+   ~10-20 sn içinde 4 bölüm üretilir.
+9. **Sonuç** — TITLE / BULLET POINTS / DESCRIPTION / GENERIC KEYWORDS text_area'larında edit edebilirsin.
+   200/250 char limitleri aşılırsa kırmızı uyarı (engellemiyor).
+10. **💾 Drive'a yükle** — `outputs/Content_<child_id>.docx` lokal kaydedilir, ardından Drive'da seçili
+    child klasörüne `Content.docx` olarak yüklenir. Aynı isimde varsa kırmızı uyarı.
+
+---
+
+## UI / state pattern'leri (önemli — geliştirirken hatırla)
+
+### Editable combobox (`_select_dropdown_with_id`)
+
+Streamlit `selectbox`'ı kapalıyken non-editable buton, `accept_new_options=True` bile
+sadece dropdown açıkken filter input'u veriyor. Native copy/paste/backspace/sağ tık
+istediğimiz için **gerçek `st.text_input`** kullanıyoruz, listeden seçim için altta
+collapsible expander içinde ayrı bir `st.selectbox`:
 
 ```
-canva_otomasyon/
-├── app.py                    # Streamlit GUI (ana akış)
-├── pipeline.py               # process_one + photoroom_edit + composite + text
-├── auto_mask.py              # Replicate GroundingDINO + fal.ai SAM2
-├── drive.py                  # Google Drive auth + folder list + upload
-├── mask_tool.py              # Tk-based mask editor (eski CLI)
-├── run.py                    # CSV batch runner (eski CLI)
-├── templates/mountain.png    # Şablon
-├── templates/fonts/BebasNeue-Regular.ttf  # Title + years fontu (Google Fonts OFL)
-├── inputs/                   # (runtime — uploaded fotos)
-├── masks/                    # (runtime — drawn/AI masks)
-├── outputs/                  # (runtime — final JPGs, gitignore)
-├── data.csv                  # CSV CLI yöntemi için
-├── requirements.txt
-├── .env                      # API keys (gitignore)
-├── google_oauth_client.json  # Drive OAuth (gitignore)
-└── .drive_token.pickle       # Drive token (gitignore, auto-generated)
+Category
+[wiper blade________________________________________]
+▶ 📋 Listeden seç (3 öğe)
 ```
 
-`.gitignore` korur: `.env`, `.venv/`, `*.pt`, `outputs/`, OAuth dosyaları.
+State:
+- `ss[f"{key}_text"]` — text_input değeri (source of truth)
+- `ss[f"{key}_sel"]` — expander içindeki selectbox değeri
+- `ss[f"{key}__items_sig"]` — items listesinin id tuple'ı (parent değişince child reset için)
+
+Sync:
+- text_input değişip geçerli bir isim ise → `ss[sel_key] = cur_text` ile selectbox senkronize edilir
+- selectbox değişirse `on_change` callback `ss[text_key] = ss[sel_key]` ile text input senkronize
+- items listesi değişirse (parent → child cascade) hem text_key hem sel_key reset edilir, ilk öğe seçilir
+
+### Brand picker (`_render_brand_picker`)
+
+Hem Vehicle hem Content tab'ın üstünde. Brand setliyse compact view:
+```
+🏷️ Brand: **Silbak**    [🔄 değiştir]
+```
+Boşsa ya da "değiştir" basıldıysa inline expander içinde `render_drive_folder_browser`.
+
+State: `ss[f"{prefix}_show_brand_picker"]` — picker açık/kapalı toggle.
+
+### Fragment (`@st.fragment _render_content_io_fragment`)
+
+Notlar/OEM/Üret/Sonuç bölümü `@st.fragment` içinde. Streamlit her widget etkileşiminde
+tüm scripti rerun eder; fragment ile sadece bu bölüm rerun olur → üstteki standart_images
+ve raw thumbnails text/checkbox değişiminde flicker etmez.
+
+### Drive cache (`drive_cache.py`)
+
+`.drive_cache/` altında klasör hiyerarşisi:
+- `categories/{cat_id}/standart_images/<file>.jpg`
+- `categories/{cat_id}/Text edit.docx`
+- `parents/{parent_id}/raw/<file>.jpg`
+
+`drive.download_file` — `modifiedTime` parametresi ile cache valid ise indirme atlar.
+Google Docs/Sheets/Slides → Office formatına export.
+
+`Settings → 🔄 Cache temizle` ile force re-download.
+
+### Config persistence (`config.py`)
+
+`app_config.json` runtime UI state'i:
+```json
+{
+  "brand_folder_id": "...", "brand_folder_name": "Silbak",
+  "llm_provider": "claude",
+  "last_category_id": "...", "last_category_name": "wiper blade",
+  "last_parent_id": "...", "last_parent_name": "SB2622B",
+  "last_child_id": "...", "last_child_name": "SB2622BA"
+}
+```
+
+Bu dosya gitignore'da. Tab'lar arası senkron config üzerinden çalışır.
+
+### Text edit.docx — LLM'e otoriter veri
+
+`content_pipeline._build_user_text_block` ve `RESPONSE_OVERRIDE` blokları LLM'e
+şunu söyler: "Sistem prompt'u 'sadece görseldeki text'i kullan' diyor ama
+**'## Category metadata' ve '## Product-specific notes' bölümlerindeki bilgi
+verified facts** — onları da kullan." Yoksa `content_prompt.md`'deki "Use ONLY
+text that is visible in the image" kuralı yüzünden Text edit.docx içeriği LLM
+tarafından yok sayılırdı.
+
+### OEM behavior
+
+LLM'e gönderilirken "**Do NOT include them yourself**" deniliyor. `apply_oem`
+parse'tan SONRA literal append yapıyor (title ve/veya keywords sonuna boşluk + OEM).
+Title 200 char aşarsa uyarı (engellemiyor).
 
 ---
 
 ## Bilinen sınırlamalar
 
-- **AI auto-mask kabaca doğru** — daireler %80 doğru yere konur, son rötuşu kullanıcı "Taşı/Boyutlandır" ile ~5 sn'de yapar. 3D perspektif kayması için manuel düzeltme şart.
-- **netcarshow.com URL'den çekilemiyor** — site agresif anti-bot uyguluyor (Playwright/CDP/stealth bile aşamadı, IP ban yiyoruz). Bu site için **Save Image As + Upload** manuel yol kullanılmalı. Diğer sitelerden URL ile çekme şu an UI'da yok ama `requests.get` ile basitçe eklenebilir.
-- **Tek template (`mountain.png`)** hardcoded. Şablon seçici GUI ileride.
-- **macOS only**: Homebrew Python + Tk varsayımı; Linux/Windows için path'ler değişir.
+- **GPT-5.5 doğrulanmadı** — model adı kodda var ama gerçek API çağrısı test edilmedi.
+  Default Claude kullan.
+- **Tek template (`mountain.png`)** araç görseli için hardcoded.
+- **netcarshow.com URL'den çekilemiyor** (anti-bot) — Save Image As + manual upload kullan.
+- **macOS only** — Homebrew Python + Tk path'leri.
+- **AI auto-mask kabaca doğru** — son rötuş manuel "Taşı/Boyutlandır" ile.
+- **Cross-tab combobox state** — bir tab'ta seçim değişince diğer tab'a geçince
+  config üzerinden senkron olur, ama widget state stale kalabilir (Cmd+R ile çözülür).
+- **Drive folder duplicate detection** — sadece isme göre. Drive'da aynı isimde 2 dosya varsa
+  ilki güncellenir.
 
 ---
 
@@ -191,18 +332,26 @@ canva_otomasyon/
 
 | Belirti | Çözüm |
 |---|---|
-| `ModuleNotFoundError: _tkinter` | `brew install python-tk@3.13` çalıştırılmamış |
+| `ModuleNotFoundError: _tkinter` | `brew install python-tk@3.13` |
 | `pip install` `numpy<2` çakışması | `simple-lama-inpainting`'i `--no-deps` ile yükle |
 | `rembg`: "No onnxruntime backend" | `pip install "rembg[cpu]"` |
 | Drive bölümü "yapılandırılmamış" | `google_oauth_client.json` proje köküne koy + restart |
-| OAuth "App not verified" | Cloud Console → OAuth consent screen → Test users → hesabı ekle, "Continue (unsafe)" |
-| `cannot open resource` (font) | `pipeline.py` macOS Arial fallback'i ile ayarlı; Linux'ta DejaVu yolu |
+| OAuth "App not verified" | Cloud Console → OAuth consent screen → Test users → hesabı ekle |
+| `cannot open resource` (font) | `pipeline.py` macOS Arial fallback ile ayarlı; Linux'ta DejaVu yolu |
+| Content.docx çıktısı garip | Settings'ten `content_prompt.md`'i edit et, kuralları sıkılaştır |
+| LLM output 200 char aştı | Text alanını manuel kısalt — uyarı engellemiyor sadece bildiriyor |
+| `Drive klasöründe 'X' zaten var` | Drive'dan eskisini sil veya yeniden adlandır, sonra tekrar üret |
+| Drive cache eski veriyi gösteriyor | Settings → 🔄 Cache temizle |
+| Combobox seçimi yapıştırınca dönüyor | text_input'a yapıştır + dışarı tıkla; geçerli isim listede yoksa öneriler görünür |
 
 ---
 
 ## Geliştirme notları
 
-- **Sırlar git'e gitmesin:** `.env`, `google_oauth_client.json`, `.drive_token.pickle` `.gitignore`'da
+- **Sırlar git'e gitmesin:** `.env`, `google_oauth_client.json`, `.drive_token.pickle`, `app_config.json` gitignore'da
 - **Repo:** https://github.com/ozguraltuntas/canva-automation
-- **Test verisi:** `inputs/`, `masks/`, `outputs/` klasörleri runtime — repo'da boş tutulur (`.gitkeep`)
-- **PhotoRoom Plus aktif** — kota: 1000 image/ay. Kalan kota: PhotoRoom dashboard veya `curl -H "x-api-key: $PHOTOROOM_API_KEY" https://image-api.photoroom.com/v2/account`
+- **Test verisi:** `inputs/`, `masks/`, `outputs/` runtime, repo'da boş tutulur (`.gitkeep`)
+- **PhotoRoom kotası:** dashboard veya `/v2/account` curl
+- **Prompt edit:** Settings → content_prompt.md edit + save
+- **Streamlit version:** 1.57+ (`@st.fragment` ve `selectbox.accept_new_options` için)
+- **2 Chrome sekmesi** ile Vehicle ve Content paralel çalıştırılabilir (her sekme ayrı session_state)
