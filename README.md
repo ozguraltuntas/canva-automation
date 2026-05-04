@@ -43,7 +43,7 @@ app.py (Streamlit GUI)
 │   └─ pipeline.process_one()
 │       ├─ simple-lama-inpainting (lokal)    ← mask alanlarını sil
 │       ├─ PhotoRoom Plus API                ← bg removal + AI shadow + plate text removal
-│       ├─ composite_on_template (PIL)       ← mountain.png üstüne yerleştir
+│       ├─ composite_on_template (PIL)       ← mountain.png üstüne yerleştir (width_ratio=0.6875)
 │       └─ update_text (PIL ImageDraw)       ← title (Bebas 125 #004aad) + years (Bebas 77.5 #4b9ddc)
 │
 ├─ render_content_tab()
@@ -318,6 +318,8 @@ Title 200 char aşarsa uyarı (engellemiyor).
 - **GPT-5.5 doğrulanmadı** — model adı kodda var ama gerçek API çağrısı test edilmedi.
   Default Claude kullan.
 - **Tek template (`mountain.png`)** araç görseli için hardcoded.
+  Araç şablon genişliğinin **%68.75**'ini kaplar (`width_ratio=0.6875`,
+  `app.py` içinde `pipeline.process_one` çağrısında set edilir).
 - **netcarshow.com URL'den çekilemiyor** (anti-bot) — Save Image As + manual upload kullan.
 - **macOS only** — Homebrew Python + Tk path'leri.
 - **AI auto-mask kabaca doğru** — son rötuş manuel "Taşı/Boyutlandır" ile.

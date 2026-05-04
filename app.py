@@ -318,7 +318,7 @@ def render_vehicle_tab():
                     title=title.strip(),
                     years=years.strip(),
                     output=output_path,
-                    width_ratio=0.55,
+                    width_ratio=0.6875,
                 )
                 ss.output_path = output_path
                 dt = time.time() - t0
