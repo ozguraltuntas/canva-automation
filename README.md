@@ -43,7 +43,10 @@ app.py (Streamlit GUI)
 │   └─ pipeline.process_one()
 │       ├─ simple-lama-inpainting (lokal)    ← mask alanlarını sil
 │       ├─ PhotoRoom Plus API                ← bg removal + AI shadow + plate text removal
-│       ├─ composite_on_template (PIL)       ← mountain.png üstüne yerleştir (width_ratio=0.6875)
+│       ├─ composite_on_template (PIL)       ← vehicle visible bbox'a göre scale (width_ratio=0.5256)
+│       │                                       alpha ≥ 200 piksel bbox = template'in %52.56'sı
+│       │                                       gölge canvas'ı yatay transparent padding ile template kenarına oturur
+│       │                                       alpha_composite ile blend (paste değil, RGBA-pürüzsüz)
 │       └─ update_text (PIL ImageDraw)       ← title (Bebas 125 #004aad) + years (Bebas 77.5 #4b9ddc)
 │
 ├─ render_content_tab()
@@ -130,7 +133,7 @@ canva-automation/
 
 | Servis | Ne için | Maliyet/araç |
 |---|---|---|
-| **PhotoRoom Plus** | bg removal + AI Shadow Soft + `textRemoval.mode=ai.all` (plaka silme) | $0.10 ($100/ay 1000 image kotası) |
+| **PhotoRoom Plus** | bg removal + AI Shadow Soft + `textRemoval.mode=ai.all` (plaka silme), `padding=0.25` (max — gölgenin canvas içinde fade out olması için) | $0.10 ($100/ay 1000 image kotası) |
 | **Replicate** (`adirik/grounding-dino`) | tekerlek + amblem bbox tespiti | ~$0.005 |
 | **fal.ai** (`fal-ai/sam2/image`) | tekerlek mask refinement | ~$0.005 |
 
@@ -317,9 +320,11 @@ Title 200 char aşarsa uyarı (engellemiyor).
 
 - **GPT-5.5 doğrulanmadı** — model adı kodda var ama gerçek API çağrısı test edilmedi.
   Default Claude kullan.
-- **Tek template (`mountain.png`)** araç görseli için hardcoded.
-  Araç şablon genişliğinin **%68.75**'ini kaplar (`width_ratio=0.6875`,
+- **Tek template (`mountain.png`, 2000×2000)** araç görseli için hardcoded.
+  Vehicle visible width = template'in **%52.56**'sı (`width_ratio=0.5256`,
   `app.py` içinde `pipeline.process_one` çağrısında set edilir).
+  Scale vehicle visible bbox'a (alpha ≥ 200) göre yapılır — gölge canvas'ı
+  bunun dışına taşıp template kenarına yatay transparent padding ile oturur.
 - **netcarshow.com URL'den çekilemiyor** (anti-bot) — Save Image As + manual upload kullan.
 - **macOS only** — Homebrew Python + Tk path'leri.
 - **AI auto-mask kabaca doğru** — son rötuş manuel "Taşı/Boyutlandır" ile.
