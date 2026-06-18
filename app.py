@@ -66,7 +66,6 @@ ss.setdefault("content_result", None)
 ss.setdefault("content_edit_title", "")
 ss.setdefault("content_edit_bullets", "")
 ss.setdefault("content_edit_description", "")
-ss.setdefault("content_edit_keywords", "")
 
 cfg = config.load()
 
@@ -77,18 +76,18 @@ def load_prompt() -> str:
     return ""
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def cached_list_folders(parent_id: str):
     return drive.list_folders(parent_id)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def cached_sync_parent_raw(parent_id: str):
     """Aynı parent için raw/ klasörünü tek seferlik Drive'dan sync et."""
     return drive_cache.sync_parent_raw(parent_id)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def cached_sync_category_assets(category_id: str):
     """Aynı category için standart_images + Text edit'i tek seferlik sync et."""
     return drive_cache.sync_category_assets(category_id)
@@ -674,14 +673,15 @@ def _render_content_io_fragment(category, parent, child, cur):
 
     st.subheader("OEM kod(lar)")
     oem = st.text_input("OEM", "", key="c_oem", placeholder="örn: A2518200845  A1234567890")
-    col_oem1, col_oem2 = st.columns(2)
-    with col_oem1:
-        oem_in_title = st.checkbox("Title sonuna ekle", key="c_oem_title")
-    with col_oem2:
-        oem_in_kw = st.checkbox("Generic Keywords sonuna ekle", key="c_oem_kw")
+    oem_in_title = st.checkbox("Title sonuna ekle", key="c_oem_title")
 
-    provider = cur.get("llm_provider", "claude")
-    provider_options = {"claude": "Claude (claude-opus-4-7)", "openai": "OpenAI (gpt-5.5)"}
+    provider = cur.get("llm_provider", "gemini")
+    provider_options = {
+        "gemini": "Gemini (gemini-2.5-flash)",
+        "claude": "Claude (claude-opus-4-7)",
+        "openai": "OpenAI (gpt-5.5)",
+        "minimax": "MiniMax (MiniMax-M2.7)",
+    }
     provider_label = provider_options.get(provider, provider)
 
     st.markdown("---")
@@ -707,15 +707,19 @@ def _render_content_io_fragment(category, parent, child, cur):
         elif not prompt_text.strip():
             st.error("content_prompt.md boş veya yok.")
         else:
-            api_key_var = "ANTHROPIC_API_KEY" if provider == "claude" else "OPENAI_API_KEY"
+            api_key_map = {
+                "claude": "ANTHROPIC_API_KEY",
+                "openai": "OPENAI_API_KEY",
+                "gemini": "GEMINI_API_KEY",
+                "minimax": "MINIMAX_API_KEY",
+            }
+            api_key_var = api_key_map.get(provider, "ANTHROPIC_API_KEY")
             if not os.getenv(api_key_var):
                 st.error(f"`.env` dosyasında **{api_key_var}** tanımlı değil.")
             else:
                 oem_targets = []
                 if oem_in_title:
                     oem_targets.append("title")
-                if oem_in_kw:
-                    oem_targets.append("keywords")
                 with st.spinner(f"{provider_options[provider]} çağrılıyor..."):
                     try:
                         t0 = time.time()
@@ -733,10 +737,21 @@ def _render_content_io_fragment(category, parent, child, cur):
                         ss.content_edit_title = result.get("title", "")
                         ss.content_edit_bullets = result.get("bullets", "")
                         ss.content_edit_description = result.get("description", "")
-                        ss.content_edit_keywords = result.get("keywords", "")
                         st.success(
                             f"Üretildi ({dt:.1f} sn, {result['image_count']} görsel gönderildi)"
                         )
+                    except RuntimeError as e:
+                        # LLM returned empty / blocked / malformed response — show red error
+                        # with raw output (if any) so user can diagnose.
+                        st.error(f"❌ {e}")
+                        raw = getattr(e, "raw_output", "") or ""
+                        if raw.strip():
+                            with st.expander("LLM ham çıktısı (debug)", expanded=False):
+                                st.code(raw, language=None)
+                        else:
+                            st.caption("LLM hiç metin döndürmedi (ham çıktı boş).")
+                        # Clear previous result so stale text_area'lar görünmesin
+                        ss.content_result = None
                     except Exception as e:
                         st.exception(e)
 
@@ -757,10 +772,6 @@ def _render_content_io_fragment(category, parent, child, cur):
         ss.content_edit_description = st.text_area(
             "DESCRIPTION", ss.content_edit_description, height=200, key="c_e_desc",
         )
-        ss.content_edit_keywords = st.text_area(
-            f"GENERIC KEYWORDS  ({len(ss.content_edit_keywords)}/250)",
-            ss.content_edit_keywords, height=100, key="c_e_kw",
-        )
 
         with st.expander("LLM ham çıktısı (debug)"):
             st.code(ss.content_result.get("raw", ""), language=None)
@@ -772,7 +783,6 @@ def _render_content_io_fragment(category, parent, child, cur):
                 "title": ss.content_edit_title.strip(),
                 "bullets": ss.content_edit_bullets.strip(),
                 "description": ss.content_edit_description.strip(),
-                "keywords": ss.content_edit_keywords.strip(),
             }
             local_out = OUTPUTS / f"Content_{child['id']}.docx"
             try:
@@ -816,8 +826,13 @@ def render_settings_tab():
         st.error("`google_oauth_client.json` yok — Drive entegrasyonu pasif.")
 
     st.subheader("Default LLM")
-    cur_provider = cur.get("llm_provider", "claude")
-    provider_options = {"claude": "Claude (claude-opus-4-7)", "openai": "OpenAI (gpt-5.5)"}
+    cur_provider = cur.get("llm_provider", "gemini")
+    provider_options = {
+        "gemini": "Gemini (gemini-2.5-flash)",
+        "claude": "Claude (claude-opus-4-7)",
+        "openai": "OpenAI (gpt-5.5)",
+        "minimax": "MiniMax (MiniMax-M2.7)",
+    }
     keys = list(provider_options.keys())
     new_provider = st.selectbox(
         "LLM", keys,
@@ -831,10 +846,14 @@ def render_settings_tab():
 
     st.markdown("---")
     st.subheader("API key durumu")
+    has_gemini = bool(os.getenv("GEMINI_API_KEY"))
     has_anth = bool(os.getenv("ANTHROPIC_API_KEY"))
     has_oai = bool(os.getenv("OPENAI_API_KEY"))
+    has_minimax = bool(os.getenv("MINIMAX_API_KEY"))
+    st.write(f"- **GEMINI_API_KEY**: {'✅ tanımlı' if has_gemini else '❌ eksik (.env\'e ekle)'}")
     st.write(f"- **ANTHROPIC_API_KEY**: {'✅ tanımlı' if has_anth else '❌ eksik (.env\'e ekle)'}")
     st.write(f"- **OPENAI_API_KEY**: {'✅ tanımlı' if has_oai else '❌ eksik (.env\'e ekle)'}")
+    st.write(f"- **MINIMAX_API_KEY**: {'✅ tanımlı' if has_minimax else '❌ eksik (.env\'e ekle)'}")
 
     st.markdown("---")
     st.subheader("Drive cache")

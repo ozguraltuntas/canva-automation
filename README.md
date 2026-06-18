@@ -3,7 +3,7 @@
 Amazon / eBay / 3rd party marketplace ürünleri için **iki çıktı** üretir:
 
 1. **Araç görseli** — `raw araç fotoğrafı → amblem/plaka temizle → arka plan kaldır + AI shadow → mountain template'e oturt → Bebas Neue text → Drive`
-2. **Content.docx** — `standart_images + raw foto + Text edit.docx + user notes → Claude/OpenAI vision → TITLE / 5 BULLETS / DESCRIPTION / GENERIC KEYWORDS → docx → Drive`
+2. **Content.docx** — `standart_images + raw foto + Text edit.docx + user notes → Claude/OpenAI vision → TITLE / 5 BULLETS / DESCRIPTION → docx → Drive`
 
 Streamlit GUI tek pencere üzerinden çalışır, 3 tab: **🚗 Araç Görseli / 📝 Content.docx / ⚙️ Ayarlar**.
 
@@ -24,7 +24,7 @@ Brand picker (üstte)                     Brand picker (üstte)               De
 5. İşle ve üret → 5.jpg                  ↳ raw thumbnails
    → Drive'a yüklenir                    Child (part_number) dropdown
                                          Notlar + OEM input + checkboxlar
-                                         🚀 Üret → 4 bölüm (edit edilebilir)
+                                         🚀 Üret → 3 bölüm (edit edilebilir)
                                          💾 Drive'a Content.docx upload
 ```
 
@@ -61,9 +61,9 @@ app.py (Streamlit GUI)
 │       ├─ 🚀 Üret → content_pipeline.generate_content()
 │       │   ├─ collect_images()              ← .drive_cache path'lerinden image listesi
 │       │   ├─ call_claude / call_openai     ← base64 vision API
-│       │   ├─ parse_llm_output()            ← TITLE/BULLETS/DESC/KEYWORDS regex split
-│       │   ├─ apply_oem()                   ← title/keywords sonuna OEM ekle
-│       │   └─ validate_lengths()            ← 200/250 char check (uyarı)
+│       │   ├─ parse_llm_output()            ← TITLE/BULLETS/DESC regex split
+│       │   ├─ apply_oem()                   ← title sonuna OEM ekle
+│       │   └─ validate_lengths()            ← 200 char check (title)
 │       └─ 💾 → content_pipeline.save_content_docx() + drive.upload_file_strict()
 │
 └─ render_settings_tab()
@@ -144,11 +144,15 @@ Kota kontrolü: `curl -H "x-api-key: $PHOTOROOM_API_KEY" https://image-api.photo
 
 | Servis | Ne için | Model |
 |---|---|---|
-| **Anthropic Claude** | TITLE / BULLETS / DESCRIPTION / KEYWORDS üretimi (vision) | `claude-opus-4-7` (1M context) |
+| **Google Gemini** | TITLE / BULLETS / DESCRIPTION / KEYWORDS üretimi (vision) — **default** | `gemini-2.5-flash` (en ucuz: ~$0.006/listing; Pro kalite için `gemini-2.5-pro` veya `gemini-3-pro-preview`) |
+| **Anthropic Claude** | aynı, alternatif | `claude-opus-4-7` (1M context) |
 | **OpenAI** | aynı, alternatif | `gpt-5.5` (1M context) — ⚠️ uçtan uca doğrulanmadı |
+| **MiniMax** | aynı, alternatif | `MiniMax-M2.7` (en yeni, OpenAI-compatible endpoint: `https://api.minimax.io/v1`) — ⚠️ **şu an pratikte kullanılamıyor**: bkz. [Bilinen sınırlamalar](#bilinen-sınırlamalar) |
 
 Default LLM Settings tab'ından seçilir (`app_config.json`'a kaydedilir).
 Combobox'tan tek seferlik değişim yok — global default.
+Yeni install'larda default **Gemini**'dir; mevcut `app_config.json`'u olan kurulumlarda
+eski seçim korunur.
 
 ---
 
@@ -179,12 +183,15 @@ cd canva-automation
 PHOTOROOM_API_KEY=sk_pr_default_...     # PhotoRoom Plus live key
 REPLICATE_API_TOKEN=r8_...
 FAL_KEY=<key_id>:<key_secret>
-ANTHROPIC_API_KEY=sk-ant-...            # Content.docx için
-OPENAI_API_KEY=sk-...                   # Content.docx için (opsiyonel)
+GEMINI_API_KEY=AIza...                  # Content.docx için (default LLM) — https://aistudio.google.com/apikey
+ANTHROPIC_API_KEY=sk-ant-...            # Content.docx için (alternatif)
+OPENAI_API_KEY=sk-...                   # Content.docx için (alternatif)
+MINIMAX_API_KEY=...                     # Content.docx için (alternatif) — https://platform.minimax.io
 ```
 
-İkisinden en az biri gerekli (default olarak hangisi seçildiyse). Diğeri eksikse
-o LLM seçilemez.
+Üçünden en az biri gerekli (default olarak hangisi seçildiyse). Settings tab'ında
+hangi key'in tanımlı olduğu görünür; eksik olan provider seçildiğinde çalıştırma
+anında hata mesajı çıkar.
 
 ### 4. Google Drive OAuth
 
@@ -221,11 +228,11 @@ SCOPES: `drive.file` + `drive.readonly`.
 5. **Child (part_number) dropdown** — `SB2622BA` vb. seç. Bu **hedef klasör** (Content.docx + 5.jpg buraya).
 6. **Notlar** — ürüne özel bilgi (örn. `Mercedes-Benz GL-Class 2006-2012`)
 7. **OEM kod(lar)** — literal append için (örn. `A2518200845 A1234567890`)
-   - "Title sonuna ekle" / "Generic Keywords sonuna ekle" checkbox'larıyla seç
+   - "Title sonuna ekle" checkbox'ı ile seç (title sonuna boşluk + OEM eklenir)
 8. **🚀 Content.docx üret** — Drive ön-kontrol (varsa LLM çağrılmaz), sonra Claude/OpenAI çağrılır,
-   ~10-20 sn içinde 4 bölüm üretilir.
-9. **Sonuç** — TITLE / BULLET POINTS / DESCRIPTION / GENERIC KEYWORDS text_area'larında edit edebilirsin.
-   200/250 char limitleri aşılırsa kırmızı uyarı (engellemiyor).
+   ~10-20 sn içinde 3 bölüm üretilir.
+9. **Sonuç** — TITLE / BULLET POINTS / DESCRIPTION text_area'larında edit edebilirsin.
+   Title 200 char limitini aşarsa kırmızı uyarı (engellemiyor).
 10. **💾 Drive'a yükle** — `outputs/Content_<child_id>.docx` lokal kaydedilir, ardından Drive'da seçili
     child klasörüne `Content.docx` olarak yüklenir. Aynı isimde varsa kırmızı uyarı.
 
@@ -311,7 +318,7 @@ tarafından yok sayılırdı.
 ### OEM behavior
 
 LLM'e gönderilirken "**Do NOT include them yourself**" deniliyor. `apply_oem`
-parse'tan SONRA literal append yapıyor (title ve/veya keywords sonuna boşluk + OEM).
+parse'tan SONRA literal append yapıyor (title sonuna boşluk + OEM).
 Title 200 char aşarsa uyarı (engellemiyor).
 
 ---
@@ -320,6 +327,7 @@ Title 200 char aşarsa uyarı (engellemiyor).
 
 - **GPT-5.5 doğrulanmadı** — model adı kodda var ama gerçek API çağrısı test edilmedi.
   Default Claude kullan.
+- **MiniMax provider şu an kullanılamaz (text-only)** — Mayıs 2026 itibarıyla MiniMax public API'sinde (`api.minimax.io` ve `api.minimaxi.chat`) sadece M2.x serisi var (`MiniMax-M2.7`, `M2.5`, `M2.1`, `M2`) ve hepsi text-only. M2.7'ye görsel gönderildiğinde model "we haven't been given any image" cevabı veriyor → görseli yok sayıyor. Eski vision modelleri (`MiniMax-VL-01`, `abab6.5s-chat`) "unknown model (2013)" hatası dönüyor; `MiniMax-Text-01` ise "token plan not support (2061)". Pipeline vision tabanlı olduğu için MiniMax dropdown'da görünüyor ama seçilse de düşük kalite (görseli ignore eden) çıktı verir. MiniMax vision-capable bir chat modeli (örn. yeni "VL" veya multimodal "M3") release edince `content_pipeline.py:18` `MINIMAX_MODEL` sabitini güncelle, `app.py` provider_options label'ı da senkronla.
 - **Tek template (`mountain.png`, 2000×2000)** araç görseli için hardcoded.
   Vehicle visible width = template'in **%52.56**'sı (`width_ratio=0.5256`,
   `app.py` içinde `pipeline.process_one` çağrısında set edilir).

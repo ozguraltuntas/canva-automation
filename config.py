@@ -8,7 +8,7 @@ CONFIG_FILE = ROOT / "app_config.json"
 DEFAULTS = {
     "brand_folder_id": "",
     "brand_folder_name": "",
-    "llm_provider": "claude",
+    "llm_provider": "gemini",
     "last_category_id": "",
     "last_category_name": "",
     "last_parent_id": "",

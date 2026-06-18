@@ -1,8 +1,9 @@
-"""content_pipeline.py — LLM (Claude / GPT-5.5) ile Amazon listing içeriği üretir.
+"""content_pipeline.py — LLM (Gemini / Claude / GPT-5.5) ile Amazon listing içeriği üretir.
 
 Akış: standart_images + raw + Text edit.docx + user_text + OEM → LLM → parse → Content.docx
 """
 import base64
+import io
 import os
 import re
 from pathlib import Path
@@ -13,9 +14,14 @@ load_dotenv()
 
 CLAUDE_MODEL = "claude-opus-4-7"
 OPENAI_MODEL = "gpt-5.5"
+GEMINI_MODEL = "gemini-2.5-flash"
+MINIMAX_MODEL = "MiniMax-M2.7"
+MINIMAX_BASE_URL = "https://api.minimax.io/v1"
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
-MAX_IMAGES = 30  # safety cap
+MAX_IMAGES = 15  # token bütçesi için cap (orig: 30)
+MAX_IMAGE_LONG_EDGE = 1568  # Anthropic önerisi; uzun kenarı bu pikselin altına resize et
+JPEG_QUALITY = 85
 
 # LLM çıktısının sadece bu 4 bölümü dönmesi için ek talimat (kullanıcı görmez):
 RESPONSE_OVERRIDE = (
@@ -26,18 +32,17 @@ RESPONSE_OVERRIDE = (
     "VERIFIED FACTS about the product. The 'use ONLY text visible in the image' rule "
     "applies to the IMAGES ONLY — it does NOT restrict the metadata/notes blocks. "
     "You MUST incorporate facts from those blocks into TITLE, BULLET POINTS, "
-    "DESCRIPTION, and GENERIC KEYWORDS where relevant (brand, product type, color, "
+    "and DESCRIPTION where relevant (brand, product type, color, "
     "fitment side, set/quantity, years-in-business claims, vehicle compatibility, etc.).\n"
     "\n"
     "RESPONSE FORMAT — STRICT:\n"
-    "Return ONLY the four sections below, in this exact order, with these exact headers:\n"
+    "Return ONLY the three sections below, in this exact order, with these exact headers:\n"
     "TITLE:\n<title text>\n\n"
     "BULLET POINTS:\n<5 bullets, each on its own line>\n\n"
     "DESCRIPTION:\n<paragraphs>\n\n"
-    "GENERIC KEYWORDS:\n<keywords>\n\n"
-    "Do NOT include MISSING INFORMATION, FOLLOW-UP PROCESS, commentary, or any other section.\n"
+    "Do NOT include GENERIC KEYWORDS, MISSING INFORMATION, FOLLOW-UP PROCESS, commentary, or any other section.\n"
     "Do NOT add lists describing what you read from the images.\n"
-    "Output the four sections only."
+    "Output the three sections only."
 )
 
 
@@ -75,12 +80,27 @@ def collect_images(category_dir: Path, parent_dir: Path) -> list:
 
 
 def encode_image_b64(path: Path) -> tuple:
-    """Returns (base64_str, media_type)."""
-    suffix = path.suffix.lower().lstrip(".")
-    media = "jpeg" if suffix == "jpg" else suffix
-    media_type = f"image/{media}"
-    data = base64.standard_b64encode(path.read_bytes()).decode("ascii")
-    return data, media_type
+    """Resize + JPEG re-encode → (base64_str, media_type). Token bütçesi için."""
+    from PIL import Image
+    with Image.open(path) as im:
+        im.load()
+        if im.mode in ("RGBA", "LA", "P"):
+            bg = Image.new("RGB", im.size, (255, 255, 255))
+            if im.mode == "P":
+                im = im.convert("RGBA")
+            bg.paste(im, mask=im.split()[-1] if im.mode in ("RGBA", "LA") else None)
+            im = bg
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
+        long_edge = max(im.size)
+        if long_edge > MAX_IMAGE_LONG_EDGE:
+            scale = MAX_IMAGE_LONG_EDGE / long_edge
+            new_size = (int(im.size[0] * scale), int(im.size[1] * scale))
+            im = im.resize(new_size, Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+        data = base64.standard_b64encode(buf.getvalue()).decode("ascii")
+    return data, "image/jpeg"
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +130,7 @@ def _build_user_text_block(text_edit: str, user_text: str, oem: str) -> str:
     if oem.strip():
         parts.append(
             f"## OEM code(s)\n{oem.strip()}\n"
-            "(These are reference codes — they will be appended to title/keywords by the program after your output. "
+            "(These are reference codes — they will be appended to the title by the program after your output. "
             "Do NOT include them yourself.)"
         )
     if not parts:
@@ -119,7 +139,8 @@ def _build_user_text_block(text_edit: str, user_text: str, oem: str) -> str:
 
 
 def call_claude(prompt: str, images: list, user_text: str, text_edit: str,
-                oem: str, model: str = CLAUDE_MODEL) -> str:
+                oem: str, model: str = CLAUDE_MODEL) -> dict:
+    """Returns {"raw": str, "finish_reason": str, "error": str|None}."""
     import anthropic
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
@@ -141,11 +162,21 @@ def call_claude(prompt: str, images: list, user_text: str, text_edit: str,
         system=prompt + RESPONSE_OVERRIDE,
         messages=[{"role": "user", "content": content}],
     )
-    return "".join(block.text for block in msg.content if hasattr(block, "text"))
+    raw = "".join(block.text for block in msg.content if hasattr(block, "text"))
+    finish_reason = getattr(msg, "stop_reason", None) or "unknown"
+    error = None
+    if not raw.strip():
+        error = "boş yanıt döndü"
+    elif finish_reason == "refusal":
+        error = "model isteği reddetti (refusal)"
+    elif finish_reason == "max_tokens":
+        error = "yanıt 4096 token limitine takıldı, kesildi — notları kısalt"
+    return {"raw": raw, "finish_reason": finish_reason, "error": error}
 
 
 def call_openai(prompt: str, images: list, user_text: str, text_edit: str,
-                oem: str, model: str = OPENAI_MODEL) -> str:
+                oem: str, model: str = OPENAI_MODEL) -> dict:
+    """Returns {"raw": str, "finish_reason": str, "error": str|None}."""
     import openai
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -169,7 +200,109 @@ def call_openai(prompt: str, images: list, user_text: str, text_edit: str,
             {"role": "user", "content": content},
         ],
     )
-    return resp.choices[0].message.content or ""
+    choice = resp.choices[0]
+    raw = choice.message.content or ""
+    finish_reason = choice.finish_reason or "unknown"
+    error = None
+    if not raw.strip():
+        error = "boş yanıt döndü"
+    elif finish_reason == "content_filter":
+        error = "OpenAI içerik filtresine takıldı — notları/prompt'u yumuşat veya başka provider seç"
+    elif finish_reason == "length":
+        error = "yanıt 4096 token limitine takıldı, kesildi — notları kısalt"
+    return {"raw": raw, "finish_reason": finish_reason, "error": error}
+
+
+def call_gemini(prompt: str, images: list, user_text: str, text_edit: str,
+                oem: str, model: str = GEMINI_MODEL) -> dict:
+    """Returns {"raw": str, "finish_reason": str, "error": str|None}."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY .env içinde tanımlı değil.")
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=api_key)
+
+    parts = []
+    for img in images:
+        b64, media_type = encode_image_b64(img)
+        parts.append(types.Part.from_bytes(
+            data=base64.b64decode(b64),
+            mime_type=media_type,
+        ))
+    parts.append(types.Part.from_text(text=_build_user_text_block(text_edit, user_text, oem)))
+
+    resp = client.models.generate_content(
+        model=model,
+        contents=[types.Content(role="user", parts=parts)],
+        config=types.GenerateContentConfig(
+            system_instruction=prompt + RESPONSE_OVERRIDE,
+            max_output_tokens=4096,
+        ),
+    )
+    raw = resp.text or ""
+    finish_reason = "unknown"
+    try:
+        fr = resp.candidates[0].finish_reason
+        finish_reason = getattr(fr, "name", None) or str(fr)
+    except (AttributeError, IndexError, TypeError):
+        pass
+    block_reason = None
+    try:
+        br = resp.prompt_feedback.block_reason
+        block_reason = getattr(br, "name", None) or str(br)
+    except AttributeError:
+        pass
+    error = None
+    if block_reason:
+        error = f"prompt engellendi (block_reason={block_reason})"
+    elif not raw.strip():
+        error = "boş yanıt döndü"
+    elif finish_reason in ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"):
+        error = f"Gemini güvenlik filtresine takıldı ({finish_reason}) — notları/prompt'u yumuşat"
+    elif finish_reason == "MAX_TOKENS":
+        error = "yanıt 4096 token limitine takıldı, kesildi — notları kısalt"
+    return {"raw": raw, "finish_reason": finish_reason, "error": error}
+
+
+def call_minimax(prompt: str, images: list, user_text: str, text_edit: str,
+                 oem: str, model: str = MINIMAX_MODEL) -> dict:
+    """Returns {"raw": str, "finish_reason": str, "error": str|None}."""
+    import openai
+    api_key = os.getenv("MINIMAX_API_KEY")
+    if not api_key:
+        raise RuntimeError("MINIMAX_API_KEY .env içinde tanımlı değil.")
+    client = openai.OpenAI(api_key=api_key, base_url=MINIMAX_BASE_URL)
+
+    content = []
+    for img in images:
+        b64, media_type = encode_image_b64(img)
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{b64}"},
+        })
+    content.append({"type": "text", "text": _build_user_text_block(text_edit, user_text, oem)})
+
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=4096,
+        messages=[
+            {"role": "system", "content": prompt + RESPONSE_OVERRIDE},
+            {"role": "user", "content": content},
+        ],
+    )
+    choice = resp.choices[0]
+    raw = choice.message.content or ""
+    finish_reason = choice.finish_reason or "unknown"
+    error = None
+    if not raw.strip():
+        error = "boş yanıt döndü"
+    elif finish_reason == "content_filter":
+        error = "MiniMax içerik filtresine takıldı"
+    elif finish_reason == "length":
+        error = "yanıt 4096 token limitine takıldı, kesildi — notları kısalt"
+    return {"raw": raw, "finish_reason": finish_reason, "error": error}
 
 
 # ---------------------------------------------------------------------------
@@ -180,21 +313,20 @@ SECTION_PATTERNS = {
     "title": r"^TITLE\s*:\s*",
     "bullets": r"^BULLET\s*POINTS\s*:\s*",
     "description": r"^DESCRIPTION\s*:\s*",
-    "keywords": r"^GENERIC\s*KEYWORDS\s*:\s*",
 }
 
 
 def parse_llm_output(raw: str) -> dict:
-    """LLM çıktısını TITLE / BULLETS / DESCRIPTION / KEYWORDS sözlüğüne ayır."""
+    """LLM çıktısını TITLE / BULLETS / DESCRIPTION sözlüğüne ayır."""
     text = raw.strip()
     # Stop on these even if model still tries to add them:
-    for stop in ("MISSING INFORMATION", "FOLLOW-UP PROCESS"):
+    for stop in ("GENERIC KEYWORDS", "MISSING INFORMATION", "FOLLOW-UP PROCESS"):
         idx = text.find(stop)
         if idx >= 0:
             text = text[:idx].rstrip()
 
     lines = text.splitlines()
-    sections = {"title": "", "bullets": "", "description": "", "keywords": ""}
+    sections = {"title": "", "bullets": "", "description": ""}
     current = None
     buf: list = []
 
@@ -221,31 +353,25 @@ def parse_llm_output(raw: str) -> dict:
 
     # Title typically single line — strip empties
     sections["title"] = sections["title"].strip()
-    sections["keywords"] = sections["keywords"].strip()
     return sections
 
 
 def apply_oem(parsed: dict, oem: str, targets: list) -> dict:
-    """OEM kod(lar)ını title ve/veya keywords sonuna boşluk + OEM ekleyerek koy."""
+    """OEM kod(lar)ını title sonuna boşluk + OEM ekleyerek koy."""
     oem = (oem or "").strip()
     if not oem or not targets:
         return parsed
     out = dict(parsed)
     if "title" in targets and out.get("title"):
         out["title"] = f"{out['title']} {oem}".strip()
-    if "keywords" in targets and out.get("keywords"):
-        out["keywords"] = f"{out['keywords']} {oem}".strip()
     return out
 
 
 def validate_lengths(parsed: dict) -> list:
     warnings = []
     title_len = len(parsed.get("title", ""))
-    kw_len = len(parsed.get("keywords", ""))
     if title_len > 200:
         warnings.append(f"Title 200 karakteri aşıyor: {title_len} karakter")
-    if kw_len > 250:
-        warnings.append(f"Generic Keywords 250 karakteri aşıyor: {kw_len} karakter")
     return warnings
 
 
@@ -253,34 +379,82 @@ def validate_lengths(parsed: dict) -> list:
 # Orchestrator + docx writer
 # ---------------------------------------------------------------------------
 
+def _raise_llm_error(provider: str, finish_reason: str, raw: str, detail: str):
+    """Raise RuntimeError with diagnostic attributes that app.py can render."""
+    err = RuntimeError(
+        f"{provider} {detail}. (finish_reason={finish_reason})"
+    )
+    err.provider = provider
+    err.finish_reason = finish_reason
+    err.raw_output = raw
+    raise err
+
+
 def generate_content(provider: str, category_dir: Path, parent_dir: Path,
                      user_text: str, oem: str, oem_targets: list,
                      prompt_text: str) -> dict:
-    """LLM'e gönder, parse+OEM+validate yap. Döner: dict with title/bullets/description/keywords/raw/warnings/images."""
+    """LLM'e gönder, parse+OEM+validate yap. Döner: dict with title/bullets/description/raw/warnings/images.
+
+    Raises RuntimeError (with provider/finish_reason/raw_output attrs) when LLM
+    response is empty, blocked, or missing critical fields (title/description).
+    """
     images = collect_images(category_dir, parent_dir)
     text_edit_path = category_dir / "Text edit.docx"
     text_edit = read_text_edit_docx(text_edit_path)
 
     if provider == "claude":
-        raw = call_claude(prompt_text, images, user_text, text_edit, oem)
+        llm = call_claude(prompt_text, images, user_text, text_edit, oem)
     elif provider in ("openai", "gpt"):
-        raw = call_openai(prompt_text, images, user_text, text_edit, oem)
+        llm = call_openai(prompt_text, images, user_text, text_edit, oem)
+    elif provider == "gemini":
+        llm = call_gemini(prompt_text, images, user_text, text_edit, oem)
+    elif provider == "minimax":
+        llm = call_minimax(prompt_text, images, user_text, text_edit, oem)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
+    raw = llm["raw"]
+    finish_reason = llm["finish_reason"]
+    provider_error = llm["error"]
+
+    # Provider-reported error (empty / content_filter / max_tokens / safety)
+    if provider_error:
+        _raise_llm_error(provider, finish_reason, raw, provider_error)
+
     parsed = parse_llm_output(raw)
     parsed = apply_oem(parsed, oem, oem_targets)
+
+    # Parse failed: raw has text but no TITLE:/BULLET POINTS:/... headers matched
+    if not any(parsed[k].strip() for k in ("title", "bullets", "description")):
+        _raise_llm_error(
+            provider, finish_reason, raw,
+            "yanıtı TITLE: / BULLET POINTS: / DESCRIPTION: formatında değil — ham çıktıyı kontrol et"
+        )
+
+    # Critical fields: title and description are required for a usable docx
+    missing = [k for k in ("title", "description") if not parsed[k].strip()]
+    if missing:
+        _raise_llm_error(
+            provider, finish_reason, raw,
+            f"kritik alanları boş döndürdü: {', '.join(missing)} — tekrar dene"
+        )
+
     warnings = validate_lengths(parsed)
+    # Soft warnings for non-critical empties (shown red but don't block)
+    if not parsed["bullets"].strip():
+        warnings.append("BULLET POINTS boş geldi — manuel doldurabilirsin")
+
     parsed["raw"] = raw
     parsed["warnings"] = warnings
     parsed["image_count"] = len(images)
     parsed["images"] = [str(p) for p in images]
     parsed["text_edit"] = text_edit
+    parsed["finish_reason"] = finish_reason
     return parsed
 
 
 def save_content_docx(parsed: dict, output_path: Path) -> None:
-    """TITLE / BULLET POINTS / DESCRIPTION / GENERIC KEYWORDS bölümleriyle docx üret."""
+    """TITLE / BULLET POINTS / DESCRIPTION bölümleriyle docx üret."""
     from docx import Document
     doc = Document()
     doc.add_paragraph("TITLE:")
@@ -298,7 +472,5 @@ def save_content_docx(parsed: dict, output_path: Path) -> None:
         para = para.strip()
         if para:
             doc.add_paragraph(para)
-    doc.add_paragraph("GENERIC KEYWORDS:")
-    doc.add_paragraph(parsed.get("keywords", ""))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
