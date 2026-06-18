@@ -279,17 +279,24 @@ def render_vehicle_tab():
 
     st.header("3. Metinler (alt banner)")
     combined = st.text_input(
-        "Araç bilgisi (model + yıl aralığı)",
+        "Araç bilgisi (model + yıl veya yıl aralığı)",
         value="BMW I5 SERIES G60 2024-2028",
-        placeholder="örn: Acura ADX 2025-2029",
+        placeholder="örn: Acura ADX 2025-2029  •  Chevrolet Suburban 2007",
     )
-    _years_match = re.search(r'\b(\d{4}\s*[-–]\s*\d{2,4})\b', combined)
-    if _years_match:
-        years = _years_match.group(1).replace(' ', '')
-        title = combined[:_years_match.start()].strip().rstrip(',').rstrip()
+    _range = re.search(r'\b(\d{4}\s*[-–]\s*\d{2,4})\b', combined)
+    if _range:
+        years = _range.group(1).replace(' ', '')
+        title = combined[:_range.start()].strip().rstrip(',').rstrip()
     else:
-        years = ""
-        title = combined.strip()
+        # Aralık yoksa tek yıl-benzeri token'a (19xx/20xx) düş — en sağdakini al
+        _singles = list(re.finditer(r'\b((?:19|20)\d{2})\b', combined))
+        if _singles:
+            m = _singles[-1]
+            years = m.group(1)
+            title = combined[:m.start()].strip().rstrip(',').rstrip()
+        else:
+            years = ""
+            title = combined.strip()
     st.caption(f"📌 Title: **{title or '(boş)'}**  |  Years: **{years or '(yıl bulunamadı)'}**")
 
     st.header("4. Drive hedef klasörü")
