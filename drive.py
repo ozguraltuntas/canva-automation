@@ -43,18 +43,24 @@ def get_service():
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
-def list_folders(parent_id: str = "root", page_size: int = 100):
-    """Drive'daki klasörleri listele (parent altındakiler)."""
+def list_folders(parent_id: str = "root", page_size: int = 1000):
+    """Drive'daki klasörleri listele (parent altındakiler) — tüm sayfalar."""
     svc = get_service()
     q = (f"'{parent_id}' in parents and "
          "mimeType = 'application/vnd.google-apps.folder' and "
          "trashed = false")
-    res = svc.files().list(
-        q=q, pageSize=page_size,
-        fields="files(id, name, parents)",
-        orderBy="name",
-    ).execute()
-    return res.get("files", [])
+    files, token = [], None
+    while True:
+        res = svc.files().list(
+            q=q, pageSize=page_size,
+            fields="nextPageToken, files(id, name, parents)",
+            orderBy="name", pageToken=token,
+        ).execute()
+        files.extend(res.get("files", []))
+        token = res.get("nextPageToken")
+        if not token:
+            break
+    return files
 
 
 def get_folder(folder_id: str):
@@ -108,8 +114,8 @@ def upload_file_strict(local_path: Path, folder_id: str, name: str = None) -> di
     return f
 
 
-def list_files(parent_id: str, mime_filter: str = None, page_size: int = 200) -> list:
-    """parent_id altındaki dosyaları (folder hariç) listele.
+def list_files(parent_id: str, mime_filter: str = None, page_size: int = 1000) -> list:
+    """parent_id altındaki dosyaları (folder hariç) listele — tüm sayfalar.
 
     mime_filter: ör. "image/" prefix match istiyorsa "image/" ver.
     Döner: [{'id', 'name', 'mimeType', 'modifiedTime'}, ...]
@@ -118,12 +124,17 @@ def list_files(parent_id: str, mime_filter: str = None, page_size: int = 200) ->
     q = (f"'{parent_id}' in parents and "
          "mimeType != 'application/vnd.google-apps.folder' and "
          "trashed = false")
-    res = svc.files().list(
-        q=q, pageSize=page_size,
-        fields="files(id, name, mimeType, modifiedTime, size)",
-        orderBy="name",
-    ).execute()
-    items = res.get("files", [])
+    items, token = [], None
+    while True:
+        res = svc.files().list(
+            q=q, pageSize=page_size,
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+            orderBy="name", pageToken=token,
+        ).execute()
+        items.extend(res.get("files", []))
+        token = res.get("nextPageToken")
+        if not token:
+            break
     if mime_filter:
         items = [it for it in items if (it.get("mimeType") or "").startswith(mime_filter)]
     return items

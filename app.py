@@ -588,6 +588,9 @@ def render_content_tab():
                          "last_parent_id": "", "last_parent_name": "",
                          "last_child_id": "", "last_child_name": ""})
         cur = config.load()
+    if not category:
+        st.info("Geçerli bir kategori seç (yukarıdaki listeden).")
+        return
 
     # 3. Sync category assets (standart_images + Text edit.docx)
     with st.spinner("Drive: standart_images & Text edit.docx indiriliyor..."):
@@ -637,6 +640,9 @@ def render_content_tab():
         config.set_many({"last_parent_id": parent["id"], "last_parent_name": parent["name"],
                          "last_child_id": "", "last_child_name": ""})
         cur = config.load()
+    if not parent:
+        st.info("Geçerli bir parent (model) seç.")
+        return
 
     # 5. Child
     children_all = cached_list_folders(parent["id"])
@@ -648,6 +654,9 @@ def render_content_tab():
     if child and (child["id"] != cur.get("last_child_id")):
         config.set_many({"last_child_id": child["id"], "last_child_name": child["name"]})
         cur = config.load()
+    if not child:
+        st.info("Geçerli bir child (part_number) seç.")
+        return
 
     # 6. Sync parent raw/
     with st.spinner("Drive: raw/ indiriliyor..."):
